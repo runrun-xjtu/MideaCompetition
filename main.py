@@ -10,7 +10,7 @@ import requests
 import datetime
 import time
 import _thread
-
+import PID
 
 class Stats(QObject):
     global step, stepLength, stepNum
@@ -41,20 +41,22 @@ class Stats(QObject):
         self.updateSignal.connect(self.progressBarupdate)
 
     def progressBarupdate(self):
-        global step, stepLength, stepNum
+        global step, stepLength, stepNum, p2, curve1, calcTime, calcTem, calcPmv
         self.ui.progressBar.setValue(0)
         if step > 0 and step < stepNum:
             self.ui.progressBar.setValue(int((step - 1) / stepNum * 100.0))
         else:
             self.ui.progressBar.setValue(int(step / stepNum * 100.0))
-
+        curve1.setData(calcTime, calcTem)
+        p2.clear()
+        p2.addItem(pg.PlotCurveItem(calcTime, calcPmv, pen='b'))
         self.ui.progressBar.update()
 
     def figInit(self):  # 按钮切换设备
-        self.ui.line_stepNum.setText("100")
+        self.ui.line_stepNum.setText("120")
         self.ui.line_stepLength.setText("10.0")
         self.ui.line_acCpacity.setText("2.0")
-        self.ui.line_lossHeat.setText("6.0")
+        self.ui.line_lossHeat.setText("0.6")
 
         self.ui.progressBar.setRange(0, 100)
         self.ui.progressBar.setValue(0)
@@ -103,7 +105,7 @@ class Stats(QObject):
     def init(self):
         self.ui.button_begin.setText("开始")
         self.ui.button_stop.setText("停止")
-        global roomL, roomW, roomH, taInit, trInit, humInit, metInit, workInit, cloInit, pmvInit, pmvMin, pmvMax, airTemInit
+        global roomL, roomW, roomH, taInit, trInit, humInit, metInit, workInit, cloInit, pmvInit, pmvMin, pmvMax, compressorSelect, airTemInit
         global calcTime, calcTem, calcPmv, curve1, curve2, stepNum, stepLength, step, state, Qcapacity, hWall
         global adjustNum, tRoomLast, tRoomNew, PMV
         step = 0
@@ -124,12 +126,13 @@ class Stats(QObject):
             metInit = float(self.ui.line_met.text())
             workInit = float(self.ui.line_work.text())
             cloSelectInit = self.ui.combo_clo.currentText()  # 服装热阻 clo    AI摄像头 （缺省值为 短袖短裤）
-            cloInit = 0.5 if cloSelectInit == "短衬衫-短裤" else (1.0 if cloSelectInit == "衬衫夹克-裤" else (1.1 if cloSelectInit == "女长裙-长袜" else 1.3 ))
-            pmvInit = float(self.ui.label_resultPmvVal.text())
+            cloInit = 0.5 if cloSelectInit == "短衬衫-短裤" else (
+                1.0 if cloSelectInit == "衬衫夹克-裤" else (1.1 if cloSelectInit == "女长裙-长袜" else 1.3))
+            #pmvInit = float(self.ui.label_resultPmvVal.text())
             pmvMin = float(self.ui.line_pmvMin.text())
             pmvMax = float(self.ui.line_pmvMax.text())
-            #airTemInit = float(self.ui.label_airTemMin.text()[:-1])
-
+            # airTemInit = float(self.ui.label_airTemMin.text()[:-1])
+            compressorSelect = self.ui.combo_frequency.currentText()
             stepNum = int(self.ui.line_stepNum.text())
             stepLength = float(self.ui.line_stepLength.text())
             Qcapacity = float(self.ui.line_acCpacity.text())
@@ -147,31 +150,38 @@ class Stats(QObject):
             self.updateSignal.emit()
 
     def begin(self):
-        global roomL, roomW, roomH, taInit, trInit, humInit, metInit, workInit, cloInit, pmvInit, pmvMin, pmvMax, airTemInit
-        global calcTime, calcTem, calcPmv, curve1, curve2, stepNum, stepLength, step, state, Qcapacity, hWall
-        global adjustNum, tRoomLast, tRoomNew, PMV
+        global roomL, roomW, roomH, taInit, trInit, humInit, metInit, workInit, cloInit, pmvInit, pmvMin, pmvMax, compressorSelect, airTemInit
+        global calcTime, calcTem, calcPmv, curve1, curve2, p2, stepNum, stepLength, step, state, Qcapacity, hWall
+        global adjustNum, tRoomLast, tRoomNew, PMV, runState, timeCount, pmvRoom, dQRoom
         state = True
         self.ui.button_begin.setText("-")
 
         def thread_Simulation(self):
-            global roomL, roomW, roomH, taInit, trInit, humInit, metInit, workInit, cloInit, pmvInit, pmvMin, pmvMax, airTemInit
-            global calcTime, calcTem, calcPmv, curve1, curve2, stepNum, stepLength, step, state, Qcapacity, hWall
-            global adjustNum, tRoomLast, tRoomNew, PMV
+            global roomL, roomW, roomH, taInit, trInit, humInit, metInit, workInit, cloInit, pmvInit, pmvMin, pmvMax, compressorSelect, airTemInit
+            global calcTime, calcTem, calcPmv, curve1, curve2, p2, stepNum, stepLength, step, state, Qcapacity, hWall
+            global adjustNum, tRoomLast, tRoomNew, PMV, runState, timeCount, pmvRoom, Walltem, dQRoom
             """ 标准工况 """
             QStd = 2500.0
             taInStd = 27.0
             taOutStd = 13.0
             trStd = 10.0
             kAStd = 2500.0 / (
-                        ((taInStd - trStd) - (taOutStd - trStd)) / (math.log((taInStd - trStd) / (taOutStd - trStd))))
+                    ((taInStd - trStd) - (taOutStd - trStd)) / (math.log((taInStd - trStd) / (taOutStd - trStd))))
             cpAveStd = 1.0057 + ((1.0069 - 1.0057) / 40) * (0.5 * taInStd + 0.5 * taOutStd)
             denAveStd = 1.2931 + ((1.1274 - 1.2931) / 40) * (0.5 * taInStd + 0.5 * taOutStd)
             VaStd = QStd / (taInStd - taOutStd) / cpAveStd / (1000 * denAveStd)  # 单位 m3/s
 
             """ 初始化参数 """
+            Walltem = 35
+            controllPeriod = 30 #切换控制状态周期
+            minPowerRatio = 0.25
             if step == 0:
                 adjustNum = 0
+                timeCount = 0
                 tRoomLast = taInit
+                runState = 0
+            if taInit > 25:
+                 Walltem = taInit
             pmvAve = 0.5 * (pmvMin + pmvMax)
             ratio = Qcapacity * 2500 / QStd
             kA = ratio * kAStd
@@ -182,56 +192,97 @@ class Stats(QObject):
             while step < stepNum:
                 if state:
                     step += 1
-                    time.sleep(0.8)
+                    time.sleep(0.1)
 
                     mRoom = VRoom * (1.2931 + ((1.1274 - 1.2931) / 40) * tRoomLast)  # 单位 kg
                     cpRoom = 1.0057 + ((1.0069 - 1.0057) / 40) * tRoomLast
                     AreaRoom = 2 * (roomL * roomW + roomL * roomH + roomW * roomH)
-                    taIn = tRoomLast
-                    EstiMax = taIn
-                    EstiMin = trStd
 
-                    """ 进入换热器求解器 """
-                    while True:
-                        taOutEsti = 0.5 * (EstiMax + EstiMin)
-                        cpAve = 1.0057 + ((1.0069 - 1.0057) / 40) * (0.5 * taIn + 0.5 * taOutEsti)
-                        denAve = 1.2931 + ((1.1274 - 1.2931) / 40) * (0.5 * taIn + 0.5 * taOutEsti)
-                        QEsti1 = Va * (1000 * denAve) * cpAve * (taIn - taOutEsti)
-                        QEsti2 = kA * (((taIn - trStd) - (taOutEsti - trStd)) / (
-                            math.log((taIn - trStd) / (taOutEsti - trStd))))
-                        if math.fabs(QEsti1 - QEsti2) < 1e-6:
-                            break
-                        else:
-                            if QEsti1 > QEsti2:
-                                EstiMax = EstiMax
-                                EstiMin = taOutEsti
+                    if compressorSelect == "定频":
+                        """ 进入换热器求解器 """
+                        taIn = tRoomLast
+                        EstiMax = taIn
+                        EstiMin = trStd
+                        while True:
+                            taOutEsti = 0.5 * (EstiMax + EstiMin)
+                            cpAve = 1.0057 + ((1.0069 - 1.0057) / 40) * (0.5 * taIn + 0.5 * taOutEsti)
+                            denAve = 1.2931 + ((1.1274 - 1.2931) / 40) * (0.5 * taIn + 0.5 * taOutEsti)
+                            QEsti1 = Va * (1000 * denAve) * cpAve * (taIn - taOutEsti)
+                            QEsti2 = kA * (((taIn - trStd) - (taOutEsti - trStd)) / (
+                                math.log((taIn - trStd) / (taOutEsti - trStd))))
+                            if math.fabs(QEsti1 - QEsti2) < 1e-6:
+                                break
                             else:
-                                EstiMax = taOutEsti
-                                EstiMin = EstiMin
+                                if QEsti1 > QEsti2:
+                                    EstiMax = EstiMax
+                                    EstiMin = taOutEsti
+                                else:
+                                    EstiMax = taOutEsti
+                                    EstiMin = EstiMin
 
-                    taOut = taOutEsti  # 换热器出风温度
-                    QinStep = stepLength * QEsti1  # 换热器制冷量
-                    judgePeriod = (pmvMax - pmvMin) * math.pow(0.5, adjustNum + 1)
-
-                    """ PMV 更新 """
-                    self.ui.line_ta.setText(str(round(tRoomLast,2)))
-                    self.ui.line_tr.setText(str(round(tRoomLast-1, 2)))
-                    self.pmvCalc()
-                    pmvRoom = PMV
-
-                    """ 判断PMV状态 """
-                    if adjustNum % 2 == 0:
-                        if pmvRoom > (pmvAve - judgePeriod):
-                            dQRoom = hWall * AreaRoom * (taInit - tRoomLast) - QinStep
+                        taOut = taOutEsti  # 换热器出风温度
+                        QinStep = QEsti1  # 换热器制冷量
+                        timeCount += stepLength
+                        if timeCount >= controllPeriod or step == 1:
+                            timeCount = 0
+                            """ PMV 更新 """
+                            judgePeriod = (pmvMax - pmvMin) * math.pow(0.5, adjustNum + 1)
+                            self.ui.line_ta.setText(str(round(tRoomLast, 2)))
+                            self.ui.line_tr.setText(str(round(tRoomLast - 1, 2)))
+                            self.pmvCalc()
+                            pmvRoom = PMV
+                            """ 判断PMV状态 """
+                            if adjustNum % 2 == 0:
+                                if pmvRoom > (pmvAve - judgePeriod):
+                                    dQRoom = stepLength * (hWall * AreaRoom * (Walltem - tRoomLast) - QinStep)
+                                    runState = 1
+                                else:
+                                    dQRoom = stepLength * (hWall * AreaRoom * (Walltem - tRoomLast))
+                                    adjustNum += 1
+                                    runState = 2
+                            else:
+                                if pmvRoom > (pmvAve + judgePeriod):
+                                    dQRoom = stepLength * (hWall * AreaRoom * (Walltem - tRoomLast) - QinStep)
+                                    adjustNum += 1
+                                    runState = 3
+                                else:
+                                    dQRoom = stepLength * (hWall * AreaRoom * (Walltem - tRoomLast))
+                                    runState = 4
                         else:
-                            dQRoom = hWall * AreaRoom * (taInit - tRoomLast)
-                            adjustNum += 1
-                    else:
-                        if pmvRoom > (pmvAve + judgePeriod):
-                            dQRoom = hWall * AreaRoom * (taInit - tRoomLast) - QinStep
-                            adjustNum += 1
-                        else:
-                            dQRoom = hWall * AreaRoom * (taInit - tRoomLast)
+                            if runState == 1:
+                                dQRoom = stepLength * (hWall * AreaRoom * (Walltem - tRoomLast) - QinStep)
+                            elif runState == 2:
+                                dQRoom = stepLength * (hWall * AreaRoom * (Walltem - tRoomLast))
+                            elif runState == 3:
+                                dQRoom = stepLength * (hWall * AreaRoom * (Walltem - tRoomLast) - QinStep)
+                            elif runState == 4:
+                                dQRoom = stepLength * (hWall * AreaRoom * (Walltem - tRoomLast))
+
+                    elif compressorSelect == "变频":
+                        timeCount += stepLength
+                        if timeCount >= controllPeriod or step == 1:
+                            timeCount = 0
+                            """ PMV 更新 """
+                            self.ui.line_ta.setText(str(round(tRoomLast, 2)))
+                            self.ui.line_tr.setText(str(round(tRoomLast - 1, 2)))
+                            self.pmvCalc()
+                            pmvRoom = PMV
+                            pid = PID.PID(1.0, 0.0, 5.0)
+                            if adjustNum == 0:
+                                pid.SetPoint = pmvMin
+                            else:
+                                pid.SetPoint = 0.5 * (pmvMin + pmvMax)
+                            pid.setdelta_time(controllPeriod)
+                            pid.update(pmvRoom)
+                            output = pid.output
+                            #print(output)
+                            if pmvRoom < pid.SetPoint or adjustNum == 1:
+                                dQRoom = stepLength * (hWall * AreaRoom * (Walltem - tRoomLast))
+                                if adjustNum == 0 or pmvRoom > pmvMax:
+                                    adjustNum += 1
+                            else:
+                                Qaircondition = min(-Qcapacity * 2500 * minPowerRatio, Qcapacity * 2500 * max(-1.0, output))
+                                dQRoom = stepLength * (hWall * AreaRoom * (Walltem - tRoomLast) + Qaircondition)
 
                     tRoomNew = tRoomLast + 0.001 * dQRoom / mRoom / cpRoom
                     tRoomLast = tRoomNew
@@ -240,9 +291,7 @@ class Stats(QObject):
                     calcTime.append(step * stepLength)
                     calcTem.append(tRoomNew)
                     calcPmv.append(pmvRoom)
-                    curve1.setData(calcTime, calcTem)
-                    p2.clear()
-                    p2.addItem(pg.PlotCurveItem(calcTime, calcPmv, pen='b'))
+
                     self.updateSignal.emit()
                 else:
                     break
@@ -323,7 +372,8 @@ class Stats(QObject):
             Met = float(self.ui.line_met.text())  # 代谢率 met      毫米波探测器/AI摄像头 （性别、心率 -> met，动作识别 -> met）
             WME = float(self.ui.line_work.text())  # 机械功率 WME    AI摄像头 （动作识别 -> WME，缺省值由 met 估算）
             cloSelect = self.ui.combo_clo.currentText()  # 服装热阻 clo    AI摄像头 （缺省值为 短袖短裤）
-            clo = 0.5 if cloSelect == "短衬衫-短裤" else (1.0 if cloSelect == "衬衫夹克-裤" else (1.1 if cloSelect == "女长裙-长袜" else 1.3 ))
+            clo = 0.5 if cloSelect == "短衬衫-短裤" else (
+                1.0 if cloSelect == "衬衫夹克-裤" else (1.1 if cloSelect == "女长裙-长袜" else 1.3))
         except ValueError:
             self.ui.label_resultPmvVal.setText('<font color=\"#FFFF0000\">Error input</font>')
             self.ui.label_resultPpdVal.setText('<font color=\"#FFFF0000\">Error input</font>')
@@ -476,6 +526,7 @@ class Stats(QObject):
         self.ui.label_stateInfo.setText("Waiting for input")
         self.ui.line_pmvMin.setText("")
         self.ui.line_pmvMax.setText("")
+
 
 app = QApplication([])
 app.setWindowIcon(QIcon('logo.png'))
